@@ -34,8 +34,11 @@ class LoginRequest(BaseModel):
     password: constr(min_length=8)
 
     @validator('username')
-    def username_lower(cls, v):
-        return v.lower()
+    def username_normalize(cls, v):
+        v = v.lower()
+        if not USERNAME_RE.match(v):
+            raise ValueError('username может содержать только a-z, 0-9, _')
+        return v
 
 class TokenRequest(BaseModel):
     token: constr(min_length=1)
@@ -130,14 +133,19 @@ def deactivate_user(user_id: int):
 @app.post("/auth/password/reset-request", response_model=SuccessOut)
 def reset_request(data: ResetPasswordRequest):
     get_db()
-    Token.request_reset(data.email)
+    try:
+        Token.request_reset(data.email)
+    except Exception:
+        raise HTTPException(status_code=500, detail="Внутренняя ошибка сервера")
     return {"success": True}
 
 @app.post("/auth/password/reset", response_model=SuccessOut)
 def reset_password(data: ConfirmResetRequest):
     get_db()
     result = Token.reset_password(data.token, bcrypt.hash(data.new_pass))
-    return {"success": result}
+    if not result:
+        raise HTTPException(status_code=400, detail="Токен недействителен или истёк")
+    return {"success": True}
 
 @app.get("/auth/users/{user_id}", response_model=UserOut)
 def get_user(user_id: int):

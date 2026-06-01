@@ -1,7 +1,7 @@
 import re
 from typing import Optional, List
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, EmailStr, constr, validator
 from passlib.hash import bcrypt
 from peewee import IntegrityError
@@ -151,8 +151,8 @@ def get_user(user_id: int):
 def list_users(
     is_active: Optional[bool] = None,
     search: Optional[str] = None,
-    limit: int = 20,
-    offset: int = 0
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0)
 ):
     get_db()
     users = User.get_list(is_active=is_active, search=search,

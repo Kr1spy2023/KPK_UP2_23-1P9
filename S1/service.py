@@ -1,9 +1,10 @@
+import re
+import secrets
 from datetime import datetime, timedelta
 from typing import Optional, List
-import secrets
 
-from fastapi import FastAPI, HTTPException, status
-from pydantic import BaseModel, EmailStr, constr
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, EmailStr, constr, validator
 from passlib.hash import bcrypt
 from models import db, User, Token, init_db
 
@@ -11,23 +12,31 @@ app = FastAPI(title="Auth Service")
 
 # ==================== СХЕМЫ ====================
 
+USERNAME_RE = re.compile(r'^[a-z0-9_]+$')
+
 class RegisterRequest(BaseModel):
     username: constr(min_length=3, max_length=50)
     email: EmailStr
     password: constr(min_length=8)
 
+    @validator('username')
+    def username_format(cls, v):
+        if not USERNAME_RE.match(v):
+            raise ValueError('username может содержать только a-z, 0-9, _')
+        return v
+
 class LoginRequest(BaseModel):
-    username: str
+    username: constr(min_length=3, max_length=50)
     password: constr(min_length=8)
 
 class TokenRequest(BaseModel):
-    token: str
+    token: constr(min_length=1)
 
 class ResetPasswordRequest(BaseModel):
     email: EmailStr
 
 class ConfirmResetRequest(BaseModel):
-    token: str
+    token: constr(min_length=1)
     new_pass: constr(min_length=8)
 
 class UserOut(BaseModel):
@@ -60,6 +69,7 @@ def user_to_dict(user: User) -> dict:
     }
 
 def create_token(user: User, token_type: str, hours: int) -> Token:
+    # Удаляем существующий токен того же типа — один токен на пользователя
     Token.delete().where(
         (Token.user == user) & (Token.token_type == token_type)
     ).execute()

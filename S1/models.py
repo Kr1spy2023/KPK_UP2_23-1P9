@@ -15,8 +15,13 @@ class BaseModel(Model):
 class User(BaseModel):
     """Основная сущность: пользователь системы."""
     id = AutoField(primary_key=True)
-    username = CharField(max_length=50, unique=True, constraints=[Check("length(username) >= 3")])
-    email = CharField(max_length=100, unique=True)
+    username = CharField(max_length=50, unique=True, constraints=[
+        Check("length(username) >= 3"),
+        Check("username GLOB '[a-z0-9_]*'")  # только a-z, 0-9, _
+    ])
+    email = CharField(max_length=100, unique=True, constraints=[
+        Check("email LIKE '%@%.%'")  # базовая проверка формата email
+    ])
     pass_hash = CharField(max_length=256)
     is_active = BooleanField(default=True)
     created_at = DateTimeField(default=datetime.now)
@@ -34,7 +39,9 @@ class User(BaseModel):
 
 
 class Token(BaseModel):
-    """Токены доступа и сброса пароля."""
+    """Токены доступа и сброса пароля.
+    Уникальный индекс (user, token_type) гарантирует один активный токен
+    каждого типа на пользователя."""
     id = AutoField(primary_key=True)
     user = ForeignKeyField(User, backref='tokens', on_delete='CASCADE')
     token = CharField(max_length=512, unique=True)
@@ -46,6 +53,9 @@ class Token(BaseModel):
 
     class Meta:
         table_name = 'tokens'
+        indexes = (
+            (('user', 'token_type'), True),  # один токен каждого типа на пользователя
+        )
 
     @property
     def is_valid(self):

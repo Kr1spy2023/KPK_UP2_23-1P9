@@ -1,18 +1,17 @@
 import re
-import secrets
-from datetime import datetime, timedelta
 from typing import Optional, List
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, EmailStr, constr, validator
 from passlib.hash import bcrypt
+from peewee import IntegrityError
 from models import db, User, Token, init_db
 
 app = FastAPI(title="Auth Service")
 
-# ==================== СХЕМЫ ====================
-
 USERNAME_RE = re.compile(r'^[a-z0-9_]+$')
+
+# ==================== СХЕМЫ ====================
 
 class RegisterRequest(BaseModel):
     username: constr(min_length=3, max_length=50)
@@ -21,19 +20,32 @@ class RegisterRequest(BaseModel):
 
     @validator('username')
     def username_format(cls, v):
+        v = v.lower()  # нормализация к нижнему регистру
         if not USERNAME_RE.match(v):
             raise ValueError('username может содержать только a-z, 0-9, _')
         return v
 
+    @validator('email')
+    def email_lower(cls, v):
+        return v.lower()  # нормализация email к нижнему регистру
+
 class LoginRequest(BaseModel):
     username: constr(min_length=3, max_length=50)
     password: constr(min_length=8)
+
+    @validator('username')
+    def username_lower(cls, v):
+        return v.lower()
 
 class TokenRequest(BaseModel):
     token: constr(min_length=1)
 
 class ResetPasswordRequest(BaseModel):
     email: EmailStr
+
+    @validator('email')
+    def email_lower(cls, v):
+        return v.lower()
 
 class ConfirmResetRequest(BaseModel):
     token: constr(min_length=1)
@@ -68,18 +80,6 @@ def user_to_dict(user: User) -> dict:
         "created_at": user.created_at.isoformat()
     }
 
-def create_token(user: User, token_type: str, hours: int) -> Token:
-    # Удаляем существующий токен того же типа — один токен на пользователя
-    Token.delete().where(
-        (Token.user == user) & (Token.token_type == token_type)
-    ).execute()
-    return Token.create(
-        user=user,
-        token=secrets.token_urlsafe(64),
-        token_type=token_type,
-        expires_at=datetime.now() + timedelta(hours=hours)
-    )
-
 # ==================== ЭНДПОИНТЫ ====================
 
 @app.on_event("startup")
@@ -89,15 +89,18 @@ def startup():
 @app.post("/auth/register", response_model=UserOut, status_code=201)
 def register(data: RegisterRequest):
     get_db()
-    if User.select().where(User.username == data.username).exists():
-        raise HTTPException(status_code=400, detail="username уже занят")
-    if User.select().where(User.email == data.email).exists():
-        raise HTTPException(status_code=400, detail="email уже занят")
-    user = User.create(
-        username=data.username,
-        email=data.email,
-        pass_hash=bcrypt.hash(data.password)
-    )
+    # Проверки уникальности без раскрытия какой именно параметр занят
+    if (User.select().where(User.username == data.username).exists() or
+            User.select().where(User.email == data.email).exists()):
+        raise HTTPException(status_code=400, detail="Пользователь уже существует")
+    try:
+        user = User.create(
+            username=data.username,
+            email=data.email,
+            pass_hash=bcrypt.hash(data.password)
+        )
+    except IntegrityError:
+        raise HTTPException(status_code=400, detail="Пользователь уже существует")
     return user_to_dict(user)
 
 @app.post("/auth/login", response_model=TokenOut)
@@ -108,7 +111,7 @@ def login(data: LoginRequest):
         raise HTTPException(status_code=401, detail="Неверный логин или пароль")
     if not user.is_active:
         raise HTTPException(status_code=403, detail="Пользователь деактивирован")
-    token = create_token(user, 'access', hours=24)
+    token = Token.create_for_user(user, 'access')
     return {"token": token.token, "expires_at": token.expires_at.isoformat()}
 
 @app.post("/auth/refresh", response_model=TokenOut)
@@ -119,22 +122,23 @@ def refresh_token(data: TokenRequest):
     )
     if not token or not token.is_valid:
         raise HTTPException(status_code=401, detail="Токен недействителен или истёк")
-    new_token = create_token(token.user, 'access', hours=24)
+    # Создаём новый только при валидном старом — гарантия в эндпоинте
+    new_token = Token.create_for_user(token.user, 'access')
     return {"token": new_token.token, "expires_at": new_token.expires_at.isoformat()}
 
 @app.delete("/auth/users/{user_id}", response_model=SuccessOut)
 def deactivate_user(user_id: int):
     get_db()
-    result = User.soft_delete(user_id)
-    return {"success": result}
+    # По спецификации возвращает true/false, не 404
+    return {"success": User.soft_delete(user_id)}
 
 @app.post("/auth/password/reset-request", response_model=SuccessOut)
 def reset_request(data: ResetPasswordRequest):
     get_db()
     user = User.get_or_none(User.email == data.email)
     if user:
-        create_token(user, 'reset', hours=1)
-    # Всегда success=True, чтобы не раскрывать наличие аккаунта
+        Token.create_for_user(user, 'reset')
+    # Всегда success=True — не раскрываем наличие аккаунта
     return {"success": True}
 
 @app.post("/auth/password/reset", response_model=SuccessOut)
@@ -145,10 +149,15 @@ def reset_password(data: ConfirmResetRequest):
     )
     if not token or not token.is_valid:
         raise HTTPException(status_code=400, detail="Токен недействителен или истёк")
-    User.update(pass_hash=bcrypt.hash(data.new_pass)).where(
-        User.id == token.user_id
-    ).execute()
-    token.delete_instance()
+    # Транзакция: обновление пароля и удаление токена атомарно
+    try:
+        with db.atomic():
+            User.update(pass_hash=bcrypt.hash(data.new_pass)).where(
+                User.id == token.user_id
+            ).execute()
+            token.delete_instance()
+    except IntegrityError:
+        raise HTTPException(status_code=500, detail="Ошибка при сбросе пароля")
     return {"success": True}
 
 @app.get("/auth/users/{user_id}", response_model=UserOut)
@@ -167,13 +176,14 @@ def list_users(
     offset: int = 0
 ):
     get_db()
-    query = User.select()
-    if is_active is not None:
-        query = query.where(User.is_active == is_active)
-    if search:
-        query = query.where(User.username.contains(search.lower()))
-    query = query.limit(limit).offset(offset)
-    return [user_to_dict(u) for u in query]
+    # username хранится в нижнем регистре, поиск нормализован
+    users = User.get_list(
+        is_active=is_active,
+        search=search.lower() if search else None,
+        limit=limit,
+        offset=offset
+    )
+    return [user_to_dict(u) for u in users]
 
 if __name__ == "__main__":
     import uvicorn

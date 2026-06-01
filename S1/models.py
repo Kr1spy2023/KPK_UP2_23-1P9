@@ -58,7 +58,7 @@ class Token(BaseModel):
     id = AutoField(primary_key=True)
     user = ForeignKeyField(User, backref='tokens', on_delete='CASCADE')
     # null=False + Check гарантируют непустоту токена
-    token = CharField(max_length=512, unique=True, null=False,
+    token = CharField(max_length=512, null=False,
                       constraints=[Check("length(token) > 0")])
     token_type = CharField(max_length=20, constraints=[
         Check("token_type IN ('access', 'reset')")

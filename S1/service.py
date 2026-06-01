@@ -89,10 +89,6 @@ def startup():
 @app.post("/auth/register", response_model=UserOut, status_code=201)
 def register(data: RegisterRequest):
     get_db()
-    # Проверки уникальности без раскрытия какой именно параметр занят
-    if (User.select().where(User.username == data.username).exists() or
-            User.select().where(User.email == data.email).exists()):
-        raise HTTPException(status_code=400, detail="Пользователь уже существует")
     try:
         user = User.create(
             username=data.username,
@@ -148,16 +144,12 @@ def reset_password(data: ConfirmResetRequest):
         (Token.token == data.token) & (Token.token_type == 'reset')
     )
     if not token or not token.is_valid:
-        raise HTTPException(status_code=400, detail="Токен недействителен или истёк")
-    # Транзакция: обновление пароля и удаление токена атомарно
-    try:
-        with db.atomic():
-            User.update(pass_hash=bcrypt.hash(data.new_pass)).where(
-                User.id == token.user_id
-            ).execute()
-            token.delete_instance()
-    except IntegrityError:
-        raise HTTPException(status_code=500, detail="Ошибка при сбросе пароля")
+        return {"success": False}
+    with db.atomic():
+        User.update(pass_hash=bcrypt.hash(data.new_pass)).where(
+            User.id == token.user_id
+        ).execute()
+        token.delete_instance()
     return {"success": True}
 
 @app.get("/auth/users/{user_id}", response_model=UserOut)
@@ -179,7 +171,7 @@ def list_users(
     # username хранится в нижнем регистре, поиск нормализован
     users = User.get_list(
         is_active=is_active,
-        search=search.lower() if search else None,
+        search=search,
         limit=limit,
         offset=offset
     )

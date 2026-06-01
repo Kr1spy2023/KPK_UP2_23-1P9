@@ -21,8 +21,8 @@ class User(BaseModel):
         Check("length(username) >= 3"),
         Check("username GLOB '[a-z0-9_]*'")
     ])
-    # Валидация формата email обеспечивается через EmailStr в сервисе
-    email = CharField(max_length=100, unique=True)
+    # Базовая валидация формата email; строгая валидация через EmailStr в сервисе
+    email = CharField(max_length=100, unique=True, constraints=[Check("email LIKE '%@%'  ")])
     pass_hash = CharField(max_length=256)
     is_active = BooleanField(default=True)
     created_at = DateTimeField(default=datetime.now)
@@ -33,7 +33,7 @@ class User(BaseModel):
     @classmethod
     def soft_delete(cls, user_id):
         """Деактивировать пользователя по ID.
-        Возвращает True если деактивировано, иначе False."""
+        Возвращает True если деактивировано, False если не найден или уже деактивирован."""
         updated = cls.update(is_active=False).where(
             (cls.id == user_id) & (cls.is_active == True)
         ).execute()

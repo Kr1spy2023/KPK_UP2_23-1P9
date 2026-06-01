@@ -126,17 +126,15 @@ def refresh_token(data: TokenRequest):
 def deactivate_user(user_id: int):
     get_db()
     result = User.soft_delete(user_id)
-    if not result:
-        raise HTTPException(status_code=404, detail="Пользователь не найден или уже деактивирован")
-    return {"success": True}
+    return {"success": result}
 
 @app.post("/auth/password/reset-request", response_model=SuccessOut)
 def reset_request(data: ResetPasswordRequest):
     get_db()
     user = User.get_or_none(User.email == data.email)
-    if not user:
-        raise HTTPException(status_code=404, detail="Email не найден")
-    create_token(user, 'reset', hours=1)
+    if user:
+        create_token(user, 'reset', hours=1)
+    # Всегда success=True, чтобы не раскрывать наличие аккаунта
     return {"success": True}
 
 @app.post("/auth/password/reset", response_model=SuccessOut)
@@ -173,7 +171,7 @@ def list_users(
     if is_active is not None:
         query = query.where(User.is_active == is_active)
     if search:
-        query = query.where(User.username.contains(search))
+        query = query.where(User.username.startswith(search))
     query = query.limit(limit).offset(offset)
     return [user_to_dict(u) for u in query]
 

@@ -19,15 +19,15 @@ class RegisterRequest(BaseModel):
     password: constr(min_length=8)
 
     @validator('username')
-    def username_format(cls, v):
-        v = v.lower()  # нормализация к нижнему регистру
+    def username_normalize(cls, v):
+        v = v.lower()
         if not USERNAME_RE.match(v):
             raise ValueError('username может содержать только a-z, 0-9, _')
         return v
 
     @validator('email')
-    def email_lower(cls, v):
-        return v.lower()  # нормализация email к нижнему регистру
+    def email_normalize(cls, v):
+        return v.lower()
 
 class LoginRequest(BaseModel):
     username: constr(min_length=3, max_length=50)
@@ -90,7 +90,7 @@ def startup():
 def register(data: RegisterRequest):
     get_db()
     try:
-        user = User.create(
+        user = User.create_user(
             username=data.username,
             email=data.email,
             pass_hash=bcrypt.hash(data.password)
@@ -113,44 +113,31 @@ def login(data: LoginRequest):
 @app.post("/auth/refresh", response_model=TokenOut)
 def refresh_token(data: TokenRequest):
     get_db()
+    # Явная проверка что токен именно типа 'access'
     token = Token.get_or_none(
         (Token.token == data.token) & (Token.token_type == 'access')
     )
     if not token or not token.is_valid:
         raise HTTPException(status_code=401, detail="Токен недействителен или истёк")
-    # Создаём новый только при валидном старом — гарантия в эндпоинте
     new_token = Token.create_for_user(token.user, 'access')
     return {"token": new_token.token, "expires_at": new_token.expires_at.isoformat()}
 
 @app.delete("/auth/users/{user_id}", response_model=SuccessOut)
 def deactivate_user(user_id: int):
     get_db()
-    # По спецификации возвращает true/false, не 404
     return {"success": User.soft_delete(user_id)}
 
 @app.post("/auth/password/reset-request", response_model=SuccessOut)
 def reset_request(data: ResetPasswordRequest):
     get_db()
-    user = User.get_or_none(User.email == data.email)
-    if user:
-        Token.create_for_user(user, 'reset')
-    # Всегда success=True — не раскрываем наличие аккаунта
+    Token.request_reset(data.email)
     return {"success": True}
 
 @app.post("/auth/password/reset", response_model=SuccessOut)
 def reset_password(data: ConfirmResetRequest):
     get_db()
-    token = Token.get_or_none(
-        (Token.token == data.token) & (Token.token_type == 'reset')
-    )
-    if not token or not token.is_valid:
-        return {"success": False}
-    with db.atomic():
-        User.update(pass_hash=bcrypt.hash(data.new_pass)).where(
-            User.id == token.user_id
-        ).execute()
-        token.delete_instance()
-    return {"success": True}
+    result = Token.reset_password(data.token, bcrypt.hash(data.new_pass))
+    return {"success": result}
 
 @app.get("/auth/users/{user_id}", response_model=UserOut)
 def get_user(user_id: int):
@@ -168,13 +155,8 @@ def list_users(
     offset: int = 0
 ):
     get_db()
-    # username хранится в нижнем регистре, поиск нормализован
-    users = User.get_list(
-        is_active=is_active,
-        search=search,
-        limit=limit,
-        offset=offset
-    )
+    users = User.get_list(is_active=is_active, search=search,
+                          limit=limit, offset=offset)
     return [user_to_dict(u) for u in users]
 
 if __name__ == "__main__":

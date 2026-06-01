@@ -171,7 +171,7 @@ def list_users(
     if is_active is not None:
         query = query.where(User.is_active == is_active)
     if search:
-        query = query.where(User.username.contains(search))
+        query = query.where(User.username.contains(search.lower()))
     query = query.limit(limit).offset(offset)
     return [user_to_dict(u) for u in query]
 

@@ -19,9 +19,7 @@ class User(BaseModel):
         Check("length(username) >= 3"),
         Check("username GLOB '[a-z0-9_]*'")  # только a-z, 0-9, _
     ])
-    email = CharField(max_length=100, unique=True, constraints=[
-        Check("email LIKE '%@%.%'")  # базовая проверка формата email
-    ])
+    email = CharField(max_length=100, unique=True)
     pass_hash = CharField(max_length=256)
     is_active = BooleanField(default=True)
     created_at = DateTimeField(default=datetime.now)
@@ -44,7 +42,7 @@ class Token(BaseModel):
     каждого типа на пользователя."""
     id = AutoField(primary_key=True)
     user = ForeignKeyField(User, backref='tokens', on_delete='CASCADE')
-    token = CharField(max_length=512, unique=True)
+    token = CharField(max_length=512, unique=True, null=False)
     token_type = CharField(max_length=20, constraints=[
         Check("token_type IN ('access', 'reset')")
     ])

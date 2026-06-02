@@ -136,7 +136,7 @@ def reset_request(data: ResetPasswordRequest):
     try:
         Token.request_reset(data.email)
     except Exception:
-        raise HTTPException(status_code=500, detail="Внутренняя ошибка сервера")
+        pass  # Всегда success=True — не раскрываем наличие аккаунта и не бросаем 500
     return {"success": True}
 
 @app.post("/auth/password/reset", response_model=SuccessOut)

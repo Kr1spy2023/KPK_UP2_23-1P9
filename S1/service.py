@@ -25,7 +25,7 @@ from datetime import datetime, timedelta
 import hashlib
 import secrets
 
-from models import User, PasswordResetToken, db, init_db
+from models import User, PasswordResetToken, db
 
 # ── JWT helpers ───────────────────────────────────────────────────────────────
 try:
@@ -62,10 +62,6 @@ except ImportError:
 # ── App init ──────────────────────────────────────────────────────────────────
 app = FastAPI(title="Auth Service", version="1.0.0")
 
-@app.on_event("startup")
-def startup():
-    init_db()
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SCHEMAS
@@ -97,8 +93,8 @@ class DeleteResponse(BaseModel):
 
 
 class LoginRequest(BaseModel):
-    login: str = Field(..., min_length=1)
-    password: str = Field(..., min_length=1)
+    login: str = Field(..., min_length=3, max_length=150)
+    password: str = Field(..., min_length=6, max_length=255)
 
 
 class LoginResponse(BaseModel):
@@ -107,7 +103,7 @@ class LoginResponse(BaseModel):
 
 
 class ResetRequestBody(BaseModel):
-    login: str = Field(..., min_length=1)
+    login: str = Field(..., min_length=3, max_length=150)
 
 
 class ResetConfirmBody(BaseModel):
@@ -154,7 +150,7 @@ def _user_to_resp(u: User) -> UserResponse:
 def _token_to_resp(t: PasswordResetToken) -> ResetTokenResponse:
     return ResetTokenResponse(
         id=t.id,
-        user_id=t.user_id_id,  # peewee FK field stores raw id as field_id
+        user_id=t.user_id_id if hasattr(t, "user_id_id") else t.__data__["user_id"],
         token=t.token,
         expires_at=t.expires_at,
         is_used=t.is_used,

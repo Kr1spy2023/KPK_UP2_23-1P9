@@ -2,64 +2,57 @@
 #
 # Endpoints:
 #
-# POST   /users/                          — Register new user
-# PUT    /users/{user_id}                 — Update user by ID
-# DELETE /users/{user_id}                 — Hard-delete user by ID
-# GET    /users/{user_id}                 — Get user by ID
-# GET    /users/                          — List users (filter: login, is_active)
+# POST   /users/                              — Register new user
+# PUT    /users/{user_id}                     — Update user by ID
+# DELETE /users/{user_id}                     — Hard-delete user by ID
+# GET    /users/{user_id}                     — Get user by ID
+# GET    /users/                              — List users (filter: login, is_active)
 #
-# POST   /auth/login                      — Login, returns JWT access_token
-# POST   /auth/reset-password/request     — Request password reset token
-# POST   /auth/reset-password/confirm     — Confirm reset with token + new password
+# POST   /auth/login                          — Login, returns JWT access_token
+# POST   /auth/reset-password/request         — Request password reset token
+# POST   /auth/reset-password/confirm         — Confirm reset with token + new password
 #
-# POST   /reset-tokens/                   — Create reset token record
-# PUT    /reset-tokens/{token_id}         — Update reset token (mark used)
-# DELETE /reset-tokens/{token_id}         — Hard-delete reset token
-# GET    /reset-tokens/{token_id}         — Get reset token by ID
-# GET    /reset-tokens/                   — List reset tokens (filter: user_id, is_used)
+# POST   /reset-tokens/                       — Create reset token record
+# PUT    /reset-tokens/{token_id}             — Update reset token (only is_used field)
+# DELETE /reset-tokens/{token_id}             — Hard-delete reset token
+# GET    /reset-tokens/{token_id}             — Get reset token by ID
+# GET    /reset-tokens/                       — List reset tokens (filter: user_id, is_used)
 
 from fastapi import FastAPI, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, validator
 from typing import List, Optional
 from datetime import datetime, timedelta
 import hashlib
 import secrets
 
+from passlib.context import CryptContext
+from jose import jwt as _jwt
+
 from models import User, PasswordResetToken, db
 
-# ── JWT helpers ───────────────────────────────────────────────────────────────
-try:
-    from jose import jwt as _jwt
-    SECRET_KEY = "auth_service_secret_change_in_production"
-    ALGORITHM = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES = 60
+# ── Config ────────────────────────────────────────────────────────────────────
+SECRET_KEY = "auth_service_secret_change_in_production"
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 60
 
-    def create_access_token(data: dict) -> str:
-        payload = data.copy()
-        payload["exp"] = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-        return _jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
-except ImportError:
-    def create_access_token(data: dict) -> str:  # type: ignore
-        return secrets.token_hex(32)
+_pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-# ── Password hashing ──────────────────────────────────────────────────────────
-try:
-    from passlib.context import CryptContext
-    _pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-    def hash_password(plain: str) -> str:
-        return _pwd_context.hash(plain)
+def hash_password(plain: str) -> str:
+    return _pwd_context.hash(plain)
 
-    def verify_password(plain: str, hashed: str) -> bool:
-        return _pwd_context.verify(plain, hashed)
-except ImportError:
-    def hash_password(plain: str) -> str:  # type: ignore
-        return hashlib.sha256(plain.encode()).hexdigest()
 
-    def verify_password(plain: str, hashed: str) -> bool:  # type: ignore
-        return hashlib.sha256(plain.encode()).hexdigest() == hashed
+def verify_password(plain: str, hashed: str) -> bool:
+    return _pwd_context.verify(plain, hashed)
 
-# ── App init ──────────────────────────────────────────────────────────────────
+
+def create_access_token(data: dict) -> str:
+    payload = data.copy()
+    payload["exp"] = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    return _jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+
+
+# ── App ───────────────────────────────────────────────────────────────────────
 app = FastAPI(title="Auth Service", version="1.0.0")
 
 
@@ -116,8 +109,15 @@ class ResetTokenCreate(BaseModel):
     token: str = Field(..., max_length=255)
     expires_at: datetime
 
+    @validator("expires_at")
+    def expires_at_must_be_future(cls, v: datetime) -> datetime:
+        if v <= datetime.utcnow():
+            raise ValueError("expires_at must be a future datetime")
+        return v
+
 
 class ResetTokenUpdate(BaseModel):
+    # Only is_used is supported for update
     is_used: Optional[bool] = None
 
 
@@ -148,9 +148,12 @@ def _user_to_resp(u: User) -> UserResponse:
 
 
 def _token_to_resp(t: PasswordResetToken) -> ResetTokenResponse:
+    # Access raw FK integer via __data__ — the only reliable way in Peewee
+    # when ForeignKeyField is defined, Peewee stores raw id in __data__["user_id"]
+    raw_user_id = t.__data__["user_id"]
     return ResetTokenResponse(
         id=t.id,
-        user_id=t.user_id_id if hasattr(t, "user_id_id") else t.__data__["user_id"],
+        user_id=raw_user_id,
         token=t.token,
         expires_at=t.expires_at,
         is_used=t.is_used,
@@ -192,9 +195,10 @@ def update_user(user_id: int, data: UserUpdate):
         user = User.get_by_id(user_id)
     except User.DoesNotExist:
         raise HTTPException(status_code=404, detail="User not found")
-
     if data.login is not None:
-        if User.select().where((User.login == data.login) & (User.id != user_id)).exists():
+        if User.select().where(
+            (User.login == data.login) & (User.id != user_id)
+        ).exists():
             raise HTTPException(status_code=409, detail="Login already taken")
         user.login = data.login
     if data.password is not None:
@@ -207,7 +211,7 @@ def update_user(user_id: int, data: UserUpdate):
 @app.delete("/users/{user_id}", response_model=DeleteResponse)
 def delete_user(user_id: int):
     """
-    Hard-delete user by ID (Auth Service uses hard delete).
+    Hard-delete user by ID (Auth Service uses hard delete per requirements).
     Returns {"success": true} if deleted, {"success": false} if not found.
     """
     deleted = User.delete().where(User.id == user_id).execute()
@@ -270,12 +274,26 @@ def login(data: LoginRequest):
 def reset_password_request(data: ResetRequestBody):
     """
     Request a password reset token for the given login.
+    If an active (unused, non-expired) token already exists, returns 409.
     Creates and returns a reset token valid for 1 hour.
     """
     try:
         user = User.get(User.login == data.login)
     except User.DoesNotExist:
         raise HTTPException(status_code=404, detail="User not found")
+
+    # Business logic: do not create duplicate active tokens
+    active_token_exists = PasswordResetToken.select().where(
+        (PasswordResetToken.user_id == user.id) &
+        (PasswordResetToken.is_used == False) &
+        (PasswordResetToken.expires_at > datetime.utcnow())
+    ).exists()
+    if active_token_exists:
+        raise HTTPException(
+            status_code=409,
+            detail="An active reset token already exists for this user"
+        )
+
     token_str = secrets.token_urlsafe(32)
     expires = datetime.utcnow() + timedelta(hours=1)
     rt = PasswordResetToken.create(
@@ -302,7 +320,14 @@ def reset_password_confirm(data: ResetConfirmBody):
         raise HTTPException(status_code=400, detail="Token already used")
     if rt.expires_at < datetime.utcnow():
         raise HTTPException(status_code=400, detail="Token expired")
-    user = rt.user_id  # peewee resolves FK automatically
+
+    # Explicitly fetch User by raw FK id to avoid Peewee proxy issues
+    raw_user_id = rt.__data__["user_id"]
+    try:
+        user = User.get_by_id(raw_user_id)
+    except User.DoesNotExist:
+        raise HTTPException(status_code=404, detail="User not found")
+
     user.password_hash = hash_password(data.new_password)
     user.updated_at = datetime.utcnow()
     user.save()
@@ -319,11 +344,14 @@ def reset_password_confirm(data: ResetConfirmBody):
 def create_reset_token(data: ResetTokenCreate):
     """
     Create a password reset token record manually.
+    expires_at must be a future datetime.
     Example response: {"id": 1, "user_id": 1, "token": "abc...", ...}
     """
     if not User.select().where(User.id == data.user_id).exists():
         raise HTTPException(status_code=404, detail="User not found")
-    if PasswordResetToken.select().where(PasswordResetToken.token == data.token).exists():
+    if PasswordResetToken.select().where(
+        PasswordResetToken.token == data.token
+    ).exists():
         raise HTTPException(status_code=409, detail="Token already exists")
     rt = PasswordResetToken.create(
         user_id=data.user_id,
@@ -338,7 +366,7 @@ def create_reset_token(data: ResetTokenCreate):
 @app.put("/reset-tokens/{token_id}", response_model=ResetTokenResponse)
 def update_reset_token(token_id: int, data: ResetTokenUpdate):
     """
-    Update reset token (e.g. mark as used).
+    Update reset token. Only the is_used field is supported for update.
     Example response: {"id": 1, "is_used": true, ...}
     """
     try:
@@ -357,7 +385,9 @@ def delete_reset_token(token_id: int):
     Hard-delete reset token by ID.
     Returns {"success": true} if deleted.
     """
-    deleted = PasswordResetToken.delete().where(PasswordResetToken.id == token_id).execute()
+    deleted = PasswordResetToken.delete().where(
+        PasswordResetToken.id == token_id
+    ).execute()
     return DeleteResponse(success=bool(deleted))
 
 

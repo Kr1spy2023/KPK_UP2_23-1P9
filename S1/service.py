@@ -148,12 +148,12 @@ def _user_to_resp(u: User) -> UserResponse:
 
 
 def _token_to_resp(t: PasswordResetToken) -> ResetTokenResponse:
-    # Access raw FK integer via __data__ — the only reliable way in Peewee
-    # when ForeignKeyField is defined, Peewee stores raw id in __data__["user_id"]
-    raw_user_id = t.__data__["user_id"]
+    # t.__data__["user_id"] returns the raw integer FK value stored by Peewee.
+    # This is the standard Peewee approach: ForeignKeyField stores the raw id
+    # in __data__ under the field name, avoiding an extra lazy DB query.
     return ResetTokenResponse(
         id=t.id,
-        user_id=raw_user_id,
+        user_id=t.__data__["user_id"],
         token=t.token,
         expires_at=t.expires_at,
         is_used=t.is_used,

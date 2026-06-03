@@ -1,6 +1,7 @@
 peewee
 fastapi
-pydantic
-python-jose
-passlib
 uvicorn
+pydantic
+passlib
+python-jose
+requests

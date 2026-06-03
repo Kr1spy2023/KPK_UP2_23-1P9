@@ -1,9 +1,11 @@
 from peewee import (
     Model,
     AutoField,
+    IntegerField,
     CharField,
     BooleanField,
     DateTimeField,
+    ForeignKeyField,
     SqliteDatabase,
 )
 from datetime import datetime
@@ -30,7 +32,7 @@ class User(BaseModel):
 
 class PasswordResetToken(BaseModel):
     id = AutoField()
-    user_id = CharField(max_length=150)
+    user_id = ForeignKeyField(User, backref="reset_tokens", column_name="user_id")
     token = CharField(max_length=255, unique=True)
     expires_at = DateTimeField()
     is_used = BooleanField(default=False)
